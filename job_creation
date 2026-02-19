@@ -1,0 +1,265 @@
+import logging
+
+class SlurmJob(object):
+    """Controls for a single Slurm job
+
+    Parameters
+    ----------
+    name : `string`
+       Identifier for the job.
+
+    out_fname : `string`
+       Name of the file where output of Slurm job will be stored.
+
+    err_fname : `string`
+       Name of the file where error messages will be saved.
+
+    queue : `string`
+       Identifier of the queue in which the Slurm job will be computed.
+
+    msg : `string`
+       PBS msg. Options are `b`, `e` and `e`. Default is: `bea`.
+
+    email : `string`
+       Mail of the user to which `msg` will be sent.
+
+    nodes : `integer`
+       Number of nodes to use in the calculation.
+
+    ppn : `integer`
+       Number of processors that each node will be using in the computation.
+
+    mem : `integer`
+       RAM memory to be used.
+
+    walltime : `string`
+       Max time to have the job in the queue manager.
+    """
+
+    def __init__(
+        self,
+        name: str = "input",
+        queue: str = "bigmem",
+        msg: str = "ALL",
+        email="julien.marchioro@apc.in2p3.fr",
+        nodes: int = 1,
+        ntasks: int=1
+    ) -> None:
+        
+        # job name
+        self.name = name
+        if self.name == "" or self.name is None:
+            self.name = "input"
+
+        # mailing options
+        self.msg = msg
+        if self.msg == "" or self.msg is None:
+            self.msg = "bea"
+
+        # user mail
+        self.email = email
+        if self.email == "" or self.email is None:
+            raise ValueError("Slurm job requires email")
+
+        # number of nodes to use
+        self.nodes = int(nodes)
+        if self.nodes < 1 or self.nodes is None:
+            raise ValueError("Slurm job requires nodes to be an integer >= 1")
+
+        # number of nodes to use
+        self.ntasks = int(ntasks)
+        if self.ntasks < 1 or self.ntasks is None:
+            raise ValueError("Slurm job requires tasks to be an integer >= 1")
+        
+        # queue string
+        self.queue = queue
+        if self.queue is None:
+            raise ValueError("Slurm job requires type of queue")
+
+    def set_slurm_config(self) -> str:
+        """Create string with Slurm configuration options"""
+        string = "#!/bin/bash -l\n"
+        string += "\n"
+        string += "#SBATCH --job-name=run_MCMC_{}\n".format(self.name)
+        string += "#SBATCH --mail-type={}\n".format(self.msg)
+        string += "#SBATCH --mail-user={}\n".format(self.email)
+        string += "#SBATCH --nodes={}\n".format(self.nodes)
+        string += "#SBATCH --ntasks-per-node={}\n".format(self.ntasks)
+        string += "#SBATCH --partition {}\n".format(self.queue)
+        
+    
+        string += "\nls /scratch\n"
+
+        string += "\nexport SLURM_JOBID={}\n".format(self.name)
+
+        string += "\nexport SLURM_DIR=/work/marchior/MCMC\n"
+        string += "export END_DIR=/work/marchior/MCMC_results\n"
+        string += "export SRC_CODE=/work/marchior/ML_MCMC\n"
+
+        string += "mkdir -p /scratch/${USER}/run_MCMC/${SLURM_JOBID}\n"
+
+        string += "\nexport SCRATCH_DIRECTORY=/scratch/${USER}/run_MCMC/${SLURM_JOBID}\n"
+
+        string += "\ncd ${SCRATCH_DIRECTORY}\n"
+
+        string += "\ncp ${SRC_CODE}/mcmc.py ${SCRATCH_DIRECTORY}\n"
+        string += "cp ${SRC_CODE}/priors.py ${SCRATCH_DIRECTORY}\n"
+        string += "cp ${SRC_CODE}/machine_learning.py ${SCRATCH_DIRECTORY}\n"
+        string += "cp ${SLURM_DIR}/data/data.h5 ${SCRATCH_DIRECTORY}\n"
+        string += "cp ${SLURM_DIR}/data/target.h5 ${SCRATCH_DIRECTORY}\n"
+        string += "cp ${SLURM_DIR}/data/GW_m_q/m_q_${SLURM_JOBID}.h5 ${SCRATCH_DIRECTORY}\n"
+
+        string += "\necho 'succesfully copied the files'\n"
+
+        string += '\neval "$(/soft/anaconda3/bin/conda shell.bash hook)"\n'
+        string += "conda activate mcmc\n"
+        string += "python3 ${SCRATCH_DIRECTORY}/mcmc.py ${SLURM_JOBID}\n"
+        string += "echo 'succesfully ran mcmc'\n"
+
+        string += "\ncd ${END_DIR}\n"
+
+        string += "\ncp -r ${SCRATCH_DIRECTORY}/ .\n"
+        string += "echo 'successfully transferred files'\n"
+        string += "rm -rf ${SCRATCH_DIRECTORY}\n"
+
+        string += "\n# happy end\n"
+        string += "exit 0\n"
+
+
+        return string
+
+
+    def write_job_to_file(self, fname: str = "") -> None:
+        """Write Slurm job to a file
+
+        Parameters
+        ----------
+        fname : `string`
+           Filename for the PBS job.
+        """
+
+        msg = self.set_slurm_config()
+    
+
+        with open(fname, "w") as f:
+            f.write(msg)
+
+
+def create_slurm_job(jobname, **kwargs) -> SlurmJob:
+        """Create a Slurm job
+
+        Parameters
+        ----------
+        jobname : `string`
+           Name of the job.
+
+        **kwargs : `misc`
+           Other parameters used in the SlurmJob class (see SlurmJob on `job` module).
+        """
+
+        if jobname is None or jobname == "":
+            raise ValueError("`jobname` cannot be empty")
+
+        # create PBSJob
+        slurmjob = SlurmJob(name=jobname, **kwargs)
+
+        return slurmjob
+
+def save_slurm_job(
+        name: str = None, slurmjob: SlurmJob = None
+    ) -> None:
+        """
+        Save Slurm job to a file
+
+        Parameters
+        ----------
+        jobname : `string`
+           Name of the job.
+
+        jobstring : `string`
+           String with the complete Slurm job.
+        """
+
+        if slurmjob is None:
+            raise ValueError("`slurmjob` needs to be a SlurmJob object")
+
+        fname = f"/work/marchior/ML_MCMC/run_MCMC_{name}.sh"
+        slurmjob.write_job_to_file(fname)
+
+        logging.debug(
+            f"mesabinary_grid mod: Slurm script `{fname}` successfully created"
+        )
+
+
+if __name__ == "__main__":
+    # create job
+    # liste = ['GW150914_095045',
+               'GW151012_095443',
+               'GW151226_033853',
+               'GW170104_101158',
+               'GW170608_020116',
+               'GW170809_082821',
+               'GW170814_103043',
+               'GW170818_022509',
+               'GW170823_131358',
+               'GW190408_181802',
+               'GW190412_053044',
+               'GW190413_052954',
+               'GW190421_213856',
+               'GW190503_185404',
+               'GW190512_180714',
+               'GW190513_205428',
+               'GW190514_065416',
+               'GW190517_055101',
+               'GW190521_074359',
+               'GW190527_092055',
+               'GW190630_185205',
+               'GW190707_093326',
+               'GW190708_232457',
+               'GW190719_215514',
+               'GW190720_000836',
+               'GW190725_174728',
+               'GW190727_060333',
+               'GW190728_064510',
+               'GW190731_140936',
+               'GW190803_022701',
+               'GW190805_211137',
+               'GW190828_063405',
+               'GW190828_065509',
+               'GW190910_112807',
+               'GW190915_235702',
+               'GW190916_200658',
+               'GW190925_232845',
+               'GW190926_050336',
+               'GW190930_133541',
+               'GW191103_012549', 
+               'GW191105_143521',
+               'GW191113_071753',
+               'GW191126_115259',
+               'GW191129_134029',
+               'GW191204_110529',
+               'GW191204_171526',
+               'GW191215_223052',
+               'GW191216_213338',
+               'GW191222_033537',
+               'GW200112_155838',
+               'GW200128_022011',
+               'GW200129_065458',
+               'GW200202_154313',
+               'GW200208_130117',
+               'GW200209_085452',
+               'GW200219_094415',
+               'GW200220_124850',
+               'GW200224_222234',
+               'GW200225_060421',
+               'GW200302_015811',
+               'GW200306_093714',
+               'GW200308_173609',
+               'GW200311_115853',
+               'GW200316_215756',
+               'GW200322_091133']
+                 
+    for name in liste:
+        print(name)
+        Job = create_slurm_job(jobname=name)
+        save_slurm_job(name=name, slurmjob=Job)
